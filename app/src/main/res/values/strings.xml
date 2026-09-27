@@ -1,1 +1,4 @@
 app/src/main/res/values/strings.xml
+<resources>
+    <string name="app_name">Ping Pong League</string>
+</resources>
