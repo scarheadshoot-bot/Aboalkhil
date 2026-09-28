@@ -119,11 +119,23 @@ abstract class TournamentDao {
     @Query("SELECT * FROM tournaments WHERE status != 'ARCHIVED' LIMIT 1")
     abstract fun observeActive(): Flow<TournamentEntity?>
 
+    @Query("SELECT * FROM tournaments WHERE status = 'ARCHIVED' ORDER BY createdAt DESC")
+    abstract fun observeArchived(): Flow<List<TournamentEntity>>
+
+    @Query("SELECT * FROM tournament_teams")
+    abstract fun observeAllTeams(): Flow<List<TournamentTeamEntity>>
+
+    @Query("SELECT * FROM tournaments WHERE id = :id")
+    abstract suspend fun getTournament(id: Long): TournamentEntity?
+
     @Query("SELECT * FROM tournament_teams WHERE tournamentId = :tid ORDER BY id ASC")
     abstract fun observeTeams(tid: Long): Flow<List<TournamentTeamEntity>>
 
     @Query("SELECT * FROM matches WHERE tournamentId = :tid ORDER BY id ASC")
     abstract fun observeMatches(tid: Long): Flow<List<MatchEntity>>
+
+    @Query("UPDATE tournaments SET status = 'ARCHIVED', stage = 'COMPLETED', winnerTeamId = :winnerId WHERE id = :id")
+    abstract suspend fun finish(id: Long, winnerId: Long)
 
     @Insert
     abstract suspend fun insertTournament(t: TournamentEntity): Long
