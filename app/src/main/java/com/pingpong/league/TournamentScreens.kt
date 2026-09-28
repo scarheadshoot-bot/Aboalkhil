@@ -261,7 +261,12 @@ fun CreateTournamentScreen(db: AppDatabase, onBack: () -> Unit, onStarted: () ->
 }
 
 @Composable
-private fun Celebration(champ: TournamentTeamEntity, onBack: () -> Unit, onUndo: () -> Unit) {
+private fun Celebration(
+    champ: TournamentTeamEntity,
+    onBack: () -> Unit,
+    onUndo: () -> Unit,
+    onFinish: () -> Unit
+) {
     val inf = rememberInfiniteTransition(label = "celebrate")
     val pulse by inf.animateFloat(
         initialValue = 0.92f,
@@ -317,6 +322,7 @@ private fun Celebration(champ: TournamentTeamEntity, onBack: () -> Unit, onUndo:
             Text(it, color = Color(0xEEFFFFFF), fontSize = 18.sp)
         }
         Spacer(Modifier.height(24.dp))
+        NeonButton("إنهاء البطولة", onClick = onFinish)
         TextButton(onClick = onUndo) {
             Text("إلغاء نتيجة النهائي ×", color = Color(0xFFF87171))
         }
@@ -325,17 +331,40 @@ private fun Celebration(champ: TournamentTeamEntity, onBack: () -> Unit, onUndo:
 
 @Composable
 fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
+    val scope = rememberCoroutineScope()
     val active by db.tournamentDao().observeActive().collectAsState(initial = null)
     val current = active
     if (current == null) {
         NeonBackground { }
     } else {
-        TournamentContent(db, current, onHome)
+        TournamentContent(
+            db = db,
+            t = current,
+            onHome = onHome,
+            onFinish = { winnerId ->
+                scope.launch {
+                    db.tournamentDao().finish(current.id, winnerId)
+                    onHome()
+                }
+            },
+            onDelete = {
+                scope.launch {
+                    db.tournamentDao().deleteAll(current.id)
+                    onHome()
+                }
+            }
+        )
     }
 }
 
 @Composable
-private fun TournamentContent(db: AppDatabase, t: TournamentEntity, onHome: () -> Unit) {
+private fun TournamentContent(
+    db: AppDatabase,
+    t: TournamentEntity,
+    onHome: () -> Unit,
+    onFinish: (Long) -> Unit,
+    onDelete: () -> Unit
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val teams by remember(t.id) { db.tournamentDao().observeTeams(t.id) }.collectAsState(initial = emptyList())
@@ -409,7 +438,8 @@ private fun TournamentContent(db: AppDatabase, t: TournamentEntity, onHome: () -
             Celebration(
                 champ = champion,
                 onBack = onHome,
-                onUndo = { undoMatch = finalMatch }
+                onUndo = { undoMatch = finalMatch },
+                onFinish = { onFinish(champion.id) }
             )
         } else {
             Column(
@@ -758,10 +788,7 @@ private fun TournamentContent(db: AppDatabase, t: TournamentEntity, onHome: () -
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = false
-                    scope.launch {
-                        db.tournamentDao().deleteAll(t.id)
-                        onHome()
-                    }
+                    onDelete()
                 }) { Text("حذف") }
             },
             dismissButton = {
