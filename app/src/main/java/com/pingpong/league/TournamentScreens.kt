@@ -1,6 +1,11 @@
 package com.pingpong.league
 
 import android.widget.Toast
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
@@ -17,6 +22,68 @@ import androidx.compose.ui.unit.*
 import kotlinx.coroutines.launch
 
 private data class TeamRow(val team: TournamentTeamEntity, val played: Int, val wins: Int)
+
+private data class Resolution(
+    val finalists: List<Long>?,
+    val qualified: List<Long>,
+    val tieCandidates: List<Long>,
+    val tieRound: Int,
+    val tieSlots: Int
+)
+
+private fun resolve(ids: List<Long>, league: List<MatchEntity>, ties: List<MatchEntity>): Resolution {
+    val qualified = mutableListOf<Long>()
+    var slots = 2
+    var pool: List<Long> = ids
+    var level = 0
+    for (guard in 0 until 200) {
+        val lv = level
+        val groups = pool
+            .groupBy { id ->
+                if (lv == 0) league.count { it.winnerId == id }
+                else ties.count { it.round == lv && it.winnerId == id }
+            }
+            .toList()
+            .sortedByDescending { it.first }
+        var next: List<Long>? = null
+        for (entry in groups) {
+            val g = entry.second
+            if (g.size <= slots) {
+                qualified.addAll(g)
+                slots -= g.size
+                if (slots == 0) break
+            } else {
+                next = g
+                break
+            }
+        }
+        if (next == null) {
+            return Resolution(qualified.toList(), qualified.toList(), emptyList(), 0, 0)
+        }
+        val r = lv + 1
+        val pairs = next.size * (next.size - 1) / 2
+        val played = ties.count { it.round == r }
+        if (played < pairs) {
+            return Resolution(null, qualified.toList(), next, r, slots)
+        }
+        pool = next
+        level = r
+    }
+    return Resolution(qualified.toList(), qualified.toList(), emptyList(), 0, 0)
+}
+
+private fun samePair(m: MatchEntity, x: Long, y: Long): Boolean {
+    return (m.team1Id == x && m.team2Id == y) || (m.team1Id == y && m.team2Id == x)
+}
+
+private fun matchKey(m: MatchEntity): Int {
+    val p = when (m.phase) {
+        "LEAGUE" -> 0
+        "TIE" -> 1
+        else -> 2
+    }
+    return p * 1000 + m.round
+}
 
 @Composable
 private fun StatCell(text: String, color: Color = Color.White, bold: Boolean = false, size: Int = 15) {
@@ -194,7 +261,71 @@ fun CreateTournamentScreen(db: AppDatabase, onBack: () -> Unit, onStarted: () ->
 }
 
 @Composable
+private fun Celebration(champ: TournamentTeamEntity, onBack: () -> Unit, onUndo: () -> Unit) {
+    val inf = rememberInfiniteTransition(label = "celebrate")
+    val pulse by inf.animateFloat(
+        initialValue = 0.92f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "pulse"
+    )
+    val glow by inf.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.9f,
+        animationSpec = infiniteRepeatable(tween(1200), RepeatMode.Reverse),
+        label = "glow"
+    )
+    val gold = Color(0xFFFBBF24)
+    val names = champ.players.split("\n").filter { it.isNotBlank() }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            TextButton(onClick = onBack) { Text("رجوع", color = NeonCyan) }
+        }
+        Text("✨ ⭐ ✨", fontSize = 26.sp, modifier = Modifier.alpha(glow))
+        Text("تهانينا", color = gold, fontSize = 40.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(12.dp))
+        Text("🏆", fontSize = 110.sp, modifier = Modifier.scale(pulse))
+        Spacer(Modifier.height(8.dp))
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(200.dp)
+                .background(
+                    Brush.radialGradient(listOf(gold.copy(alpha = glow * 0.6f), Color.Transparent)),
+                    CircleShape
+                )
+        ) {
+            TeamLogo(champ.logoPath, 150.dp)
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(
+            champ.name,
+            color = Color.White,
+            fontSize = 30.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(8.dp))
+        names.forEach {
+            Text(it, color = Color(0xEEFFFFFF), fontSize = 18.sp)
+        }
+        Spacer(Modifier.height(24.dp))
+        TextButton(onClick = onUndo) {
+            Text("إلغاء نتيجة النهائي ×", color = Color(0xFFF87171))
+        }
+    }
+}
+
+@Composable
 fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val active by db.tournamentDao().observeActive().collectAsState(initial = null)
     val t = active
@@ -212,6 +343,8 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
     var confirmDelete by remember { mutableStateOf(false) }
 
     val league = matches.filter { it.phase == "LEAGUE" }
+    val ties = matches.filter { it.phase == "TIE" }
+    val finals = matches.filter { it.phase == "FINAL" }
     val rows = teams.map { tm ->
         val played = league.filter { it.team1Id == tm.id || it.team2Id == tm.id }
         TeamRow(tm, played.size, played.count { it.winnerId == tm.id })
@@ -220,14 +353,31 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
     val total = n * (n - 1) / 2
     val done = league.size
     val leagueDone = n >= 2 && done >= total
+    val res = if (leagueDone) resolve(teams.map { it.id }, league, ties) else null
+    val finalists = res?.finalists
+    val finalMatch = finals.firstOrNull()
+    val champion = finalMatch?.winnerId?.let { wid -> teams.firstOrNull { it.id == wid } }
 
-    val a = teams.firstOrNull { it.id == first }
-    val b = teams.firstOrNull { it.id == second }
-    val already = a != null && b != null && league.any {
-        (it.team1Id == a.id && it.team2Id == b.id) || (it.team1Id == b.id && it.team2Id == a.id)
+    val mode = when {
+        champion != null -> "WIN"
+        finalists != null -> "FINAL"
+        res != null -> "TIE"
+        else -> "LEAGUE"
+    }
+
+    fun canPick(id: Long): Boolean {
+        return when (mode) {
+            "TIE" -> res != null && res.tieCandidates.contains(id)
+            "FINAL" -> finalists != null && finalists.contains(id)
+            else -> true
+        }
     }
 
     fun onTap(id: Long) {
+        if (!canPick(id)) {
+            Toast.makeText(ctx, "هذا الفريق غير مشارك في هذه المرحلة", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (first == id) {
             first = second
             second = null
@@ -240,222 +390,288 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
         }
     }
 
+    val a = teams.firstOrNull { it.id == first }
+    val b = teams.firstOrNull { it.id == second }
+    val already = when {
+        a == null || b == null -> false
+        mode == "LEAGUE" -> league.any { samePair(it, a.id, b.id) }
+        mode == "TIE" && res != null -> ties.any { it.round == res.tieRound && samePair(it, a.id, b.id) }
+        else -> false
+    }
+
     NeonBackground {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = onHome) { Text("رجوع", color = NeonCyan) }
-                Text(
-                    t.name,
-                    color = Color.White,
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 8.dp)
-                )
-            }
-            Text(
-                "مرحلة الدوري • $done من $total",
-                color = NeonCyan,
-                fontSize = 14.sp,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+        if (champion != null && finalMatch != null) {
+            Celebration(
+                champ = champion,
+                onBack = onHome,
+                onUndo = { undoMatch = finalMatch }
             )
-
-            if (a != null && b != null) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = CardBg)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(
-                                modifier = Modifier.clickable(enabled = !already) { pendingWinner = a.id },
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                TeamLogo(a.logoPath, 84.dp)
-                                Text(a.name, color = Color.White, fontSize = 14.sp)
-                            }
-                            Text(
-                                "VS",
-                                color = NeonCyan,
-                                fontSize = 26.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Column(
-                                modifier = Modifier.clickable(enabled = !already) { pendingWinner = b.id },
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                TeamLogo(b.logoPath, 84.dp)
-                                Text(b.name, color = Color.White, fontSize = 14.sp)
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        if (already) {
-                            Text("هذه المواجهة انتهت مسبقًا", color = Color(0xFFF87171), fontSize = 15.sp)
-                        } else {
-                            Text("اضغط على الفائز", color = Color(0xCCFFFFFF), fontSize = 13.sp)
-                        }
-                    }
-                }
-            }
-
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp)
             ) {
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Spacer(Modifier.weight(1f))
-                        StatCell("لعب", Color(0xCCFFFFFF), false, 12)
-                        StatCell("فوز", Color(0xCCFFFFFF), false, 12)
-                        StatCell("خسارة", Color(0xCCFFFFFF), false, 12)
-                        StatCell("نقاط", Color(0xCCFFFFFF), false, 12)
-                    }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onHome) { Text("رجوع", color = NeonCyan) }
+                    Text(
+                        t.name,
+                        color = Color.White,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
                 }
-                items(rows, key = { it.team.id }) { row ->
-                    val sel = row.team.id == first || row.team.id == second
-                    val rank = rows.indexOfFirst { it.wins == row.wins } + 1
-                    val names = row.team.players.split("\n").filter { it.isNotBlank() }.joinToString("، ")
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onTap(row.team.id) },
-                        shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (sel) Color(0x668B5CF6) else CardBg
-                        ),
-                        border = if (sel) BorderStroke(3.dp, NeonCyan) else null
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
+
+                when (mode) {
+                    "LEAGUE" -> Text(
+                        "مرحلة الدوري • $done من $total",
+                        color = NeonCyan,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                    "TIE" -> if (res != null) {
+                        val c = res.tieCandidates.size
+                        val pairs = c * (c - 1) / 2
+                        val played = ties.count { it.round == res.tieRound }
+                        val qNames = teams.filter { res.qualified.contains(it.id) }.joinToString("، ") { it.name }
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0x66F59E0B))
                         ) {
-                            Text(
-                                "$rank",
-                                color = Color(0xCCFFFFFF),
-                                fontSize = 16.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.width(24.dp)
-                            )
-                            TeamLogo(row.team.logoPath, 44.dp)
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(horizontal = 8.dp)
-                            ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
                                 Text(
-                                    row.team.name,
+                                    "مباراة فاصلة للتأهل إلى النهائي",
                                     color = Color.White,
                                     fontSize = 17.sp,
                                     fontWeight = FontWeight.Bold
                                 )
-                                if (names.isNotEmpty()) {
-                                    Text(names, color = Color(0xCCFFFFFF), fontSize = 11.sp)
+                                Text(
+                                    "$c فرق تتنافس على ${res.tieSlots} مقعد • $played من $pairs",
+                                    color = Color(0xEEFFFFFF),
+                                    fontSize = 13.sp
+                                )
+                                if (qNames.isNotEmpty()) {
+                                    Text(
+                                        "متأهل مؤقتًا: $qNames",
+                                        color = Color(0xFF86EFAC),
+                                        fontSize = 13.sp
+                                    )
                                 }
                             }
-                            StatCell("${row.played}")
-                            StatCell("${row.wins}")
-                            StatCell("${row.played - row.wins}")
-                            StatCell("${row.wins}", NeonCyan, true, 18)
                         }
                     }
+                    "FINAL" -> Text(
+                        "🏆 النهائي",
+                        color = Color(0xFFFBBF24),
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
                 }
 
-                if (leagueDone) {
-                    item {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0x6622C55E))
-                        ) {
-                            Text(
-                                "اكتمل الدوري ✅",
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(14.dp)
-                            )
-                        }
-                    }
-                }
-
-                if (league.isNotEmpty()) {
-                    item {
-                        Text(
-                            "النتائج",
-                            color = Color.White,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 8.dp, start = 4.dp)
-                        )
-                    }
-                    items(league.reversed(), key = { it.id }) { m ->
-                        val w = teams.firstOrNull { it.id == m.winnerId }
-                        val loserId = if (m.winnerId == m.team1Id) m.team2Id else m.team1Id
-                        val l = teams.firstOrNull { it.id == loserId }
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.cardColors(containerColor = CardBg)
+                if (a != null && b != null) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 6.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = CardBg)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                if (w != null) TeamLogo(w.logoPath, 40.dp)
-                                Text(
-                                    "+1",
-                                    color = Color(0xFF4ADE80),
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp)
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                if (l != null) TeamLogo(l.logoPath, 40.dp)
-                                Text(
-                                    "0",
-                                    color = Color(0xFFF87171),
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp)
-                                )
-                                Spacer(Modifier.weight(1f))
-                                TextButton(onClick = { undoMatch = m }) {
-                                    Text("×", color = Color(0xFFF87171), fontSize = 26.sp)
+                                Column(
+                                    modifier = Modifier.clickable(enabled = !already) { pendingWinner = a.id },
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    TeamLogo(a.logoPath, 84.dp)
+                                    Text(a.name, color = Color.White, fontSize = 14.sp)
                                 }
+                                Text(
+                                    "VS",
+                                    color = NeonCyan,
+                                    fontSize = 26.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Column(
+                                    modifier = Modifier.clickable(enabled = !already) { pendingWinner = b.id },
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    TeamLogo(b.logoPath, 84.dp)
+                                    Text(b.name, color = Color.White, fontSize = 14.sp)
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            if (already) {
+                                Text("هذه المواجهة انتهت مسبقًا", color = Color(0xFFF87171), fontSize = 15.sp)
+                            } else {
+                                Text("اضغط على الفائز", color = Color(0xCCFFFFFF), fontSize = 13.sp)
                             }
                         }
                     }
                 }
 
-                item {
-                    TextButton(
-                        onClick = { confirmDelete = true },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("حذف البطولة", color = Color(0xFFF87171))
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Spacer(Modifier.weight(1f))
+                            StatCell("لعب", Color(0xCCFFFFFF), false, 12)
+                            StatCell("فوز", Color(0xCCFFFFFF), false, 12)
+                            StatCell("خسارة", Color(0xCCFFFFFF), false, 12)
+                            StatCell("نقاط", Color(0xCCFFFFFF), false, 12)
+                        }
+                    }
+                    items(rows, key = { it.team.id }) { row ->
+                        val id = row.team.id
+                        val sel = id == first || id == second
+                        val rank = rows.indexOfFirst { it.wins == row.wins } + 1
+                        val names = row.team.players.split("\n").filter { it.isNotBlank() }.joinToString("، ")
+                        val status = when {
+                            mode == "FINAL" && finalists != null && finalists.contains(id) -> "🏅 في النهائي"
+                            mode == "TIE" && res != null && res.qualified.contains(id) -> "✅ متأهل"
+                            mode == "TIE" && res != null && res.tieCandidates.contains(id) -> "⚔️ فاصلة"
+                            else -> ""
+                        }
+                        val borderStroke = when {
+                            sel -> BorderStroke(3.dp, NeonCyan)
+                            status.startsWith("⚔") -> BorderStroke(2.dp, Color(0xFFF59E0B))
+                            status.startsWith("🏅") -> BorderStroke(2.dp, Color(0xFFFBBF24))
+                            else -> null
+                        }
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .alpha(if (canPick(id)) 1f else 0.4f)
+                                .clickable { onTap(id) },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (sel) Color(0x668B5CF6) else CardBg
+                            ),
+                            border = borderStroke
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "$rank",
+                                    color = Color(0xCCFFFFFF),
+                                    fontSize = 16.sp,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.width(24.dp)
+                                )
+                                TeamLogo(row.team.logoPath, 44.dp)
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 8.dp)
+                                ) {
+                                    Text(
+                                        row.team.name,
+                                        color = Color.White,
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (names.isNotEmpty()) {
+                                        Text(names, color = Color(0xCCFFFFFF), fontSize = 11.sp)
+                                    }
+                                    if (status.isNotEmpty()) {
+                                        Text(status, color = Color(0xFFFBBF24), fontSize = 12.sp)
+                                    }
+                                }
+                                StatCell("${row.played}")
+                                StatCell("${row.wins}")
+                                StatCell("${row.played - row.wins}")
+                                StatCell("${row.wins}", NeonCyan, true, 18)
+                            }
+                        }
+                    }
+
+                    if (matches.isNotEmpty()) {
+                        item {
+                            Text(
+                                "النتائج",
+                                color = Color.White,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(top = 8.dp, start = 4.dp)
+                            )
+                        }
+                        items(matches.reversed(), key = { it.id }) { m ->
+                            val w = teams.firstOrNull { it.id == m.winnerId }
+                            val loserId = if (m.winnerId == m.team1Id) m.team2Id else m.team1Id
+                            val l = teams.firstOrNull { it.id == loserId }
+                            val label = when (m.phase) {
+                                "TIE" -> "فاصلة"
+                                "FINAL" -> "النهائي"
+                                else -> "مواجهة"
+                            }
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(containerColor = CardBg)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (w != null) TeamLogo(w.logoPath, 40.dp)
+                                    Text(
+                                        "+1",
+                                        color = Color(0xFF4ADE80),
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp)
+                                    )
+                                    Spacer(Modifier.width(12.dp))
+                                    if (l != null) TeamLogo(l.logoPath, 40.dp)
+                                    Text(
+                                        "0",
+                                        color = Color(0xFFF87171),
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp)
+                                    )
+                                    Spacer(Modifier.weight(1f))
+                                    Text(label, color = Color(0xFFFBBF24), fontSize = 12.sp)
+                                    TextButton(onClick = { undoMatch = m }) {
+                                        Text("×", color = Color(0xFFF87171), fontSize = 26.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        TextButton(
+                            onClick = { confirmDelete = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("حذف البطولة", color = Color(0xFFF87171))
+                        }
                     }
                 }
             }
@@ -473,12 +689,18 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
                     pendingWinner = null
                     first = null
                     second = null
+                    val phase = when (mode) {
+                        "TIE" -> "TIE"
+                        "FINAL" -> "FINAL"
+                        else -> "LEAGUE"
+                    }
+                    val round = if (mode == "TIE" && res != null) res.tieRound else 0
                     scope.launch {
                         db.tournamentDao().insertMatch(
                             MatchEntity(
                                 tournamentId = t.id,
-                                phase = "LEAGUE",
-                                round = 0,
+                                phase = phase,
+                                round = round,
                                 team1Id = a.id,
                                 team2Id = b.id,
                                 winnerId = winner.id
@@ -495,13 +717,24 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
 
     val um = undoMatch
     if (um != null) {
+        val later = matches.filter { matchKey(it) > matchKey(um) }
         AlertDialog(
             onDismissRequest = { undoMatch = null },
             title = { Text("حذف هذه النتيجة؟") },
+            text = {
+                if (later.isNotEmpty()) {
+                    Text("سيتم أيضًا حذف نتائج المراحل اللاحقة (الفاصلة/النهائي) لأنها تعتمد على هذه النتيجة.")
+                }
+            },
             confirmButton = {
                 TextButton(onClick = {
                     undoMatch = null
-                    scope.launch { db.tournamentDao().deleteMatch(um.id) }
+                    first = null
+                    second = null
+                    scope.launch {
+                        later.forEach { db.tournamentDao().deleteMatch(it.id) }
+                        db.tournamentDao().deleteMatch(um.id)
+                    }
                 }) { Text("حذف") }
             },
             dismissButton = {
