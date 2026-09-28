@@ -1,6 +1,7 @@
 package com.pingpong.league
 
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -10,9 +11,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -37,22 +43,39 @@ sealed interface Screen {
     data class TeamEditor(val teamId: Long?) : Screen
     object CreateTournament : Screen
     object Tournament : Screen
+    object Winners : Screen
+    data class Archive(val id: Long) : Screen
 }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val prefs = getSharedPreferences("crash", MODE_PRIVATE)
+        val lastCrash = prefs.getString("trace", null)
+        prefs.edit().remove("trace").commit()
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, e ->
+            try {
+                prefs.edit().putString("trace", Log.getStackTraceString(e)).commit()
+            } catch (t: Throwable) {
+            }
+            previous?.uncaughtException(thread, e)
+        }
+
         val db = AppDatabase.get(this)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
+                    var crash by remember { mutableStateOf(lastCrash) }
                     when (val s = screen) {
                         Screen.Home -> HomeScreen(
                             db,
                             onTeams = { screen = Screen.Teams },
                             onCreate = { screen = Screen.CreateTournament },
-                            onContinue = { screen = Screen.Tournament }
+                            onContinue = { screen = Screen.Tournament },
+                            onWinners = { screen = Screen.Winners }
                         )
                         Screen.Teams -> {
                             BackHandler { screen = Screen.Home }
@@ -78,6 +101,37 @@ class MainActivity : ComponentActivity() {
                             BackHandler { screen = Screen.Home }
                             TournamentScreen(db, onHome = { screen = Screen.Home })
                         }
+                        Screen.Winners -> {
+                            BackHandler { screen = Screen.Home }
+                            WinnersScreen(
+                                db,
+                                onBack = { screen = Screen.Home },
+                                onOpen = { screen = Screen.Archive(it) }
+                            )
+                        }
+                        is Screen.Archive -> {
+                            BackHandler { screen = Screen.Winners }
+                            ArchiveDetailScreen(db, s.id, onBack = { screen = Screen.Winners })
+                        }
+                    }
+                    val c = crash
+                    if (c != null) {
+                        AlertDialog(
+                            onDismissRequest = { crash = null },
+                            title = { Text("تقرير الخطأ") },
+                            text = {
+                                Text(
+                                    c.take(2500),
+                                    fontSize = 10.sp,
+                                    modifier = Modifier
+                                        .heightIn(max = 400.dp)
+                                        .verticalScroll(rememberScrollState())
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { crash = null }) { Text("إغلاق") }
+                            }
+                        )
                     }
                 }
             }
@@ -90,12 +144,12 @@ fun HomeScreen(
     db: AppDatabase,
     onTeams: () -> Unit,
     onCreate: () -> Unit,
-    onContinue: () -> Unit
+    onContinue: () -> Unit,
+    onWinners: () -> Unit
 ) {
     val ctx = LocalContext.current
     val count by db.teamDao().observeCount().collectAsState(initial = 0)
     val active by db.tournamentDao().observeActive().collectAsState(initial = null)
-    val soon = { Toast.makeText(ctx, "قريبًا", Toast.LENGTH_SHORT).show() }
 
     NeonBackground {
         Column(
@@ -128,7 +182,7 @@ fun HomeScreen(
             Spacer(Modifier.height(14.dp))
             NeonButton("إنشاء فريق  $count", onClick = onTeams)
             Spacer(Modifier.height(14.dp))
-            NeonButton("سجل الفائزين", onClick = soon)
+            NeonButton("سجل الفائزين", onClick = onWinners)
         }
     }
 }
