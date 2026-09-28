@@ -114,6 +114,52 @@ abstract class TeamDao {
     }
 }
 
+@Dao
+abstract class TournamentDao {
+    @Query("SELECT * FROM tournaments WHERE status != 'ARCHIVED' LIMIT 1")
+    abstract fun observeActive(): Flow<TournamentEntity?>
+
+    @Query("SELECT * FROM tournament_teams WHERE tournamentId = :tid ORDER BY id ASC")
+    abstract fun observeTeams(tid: Long): Flow<List<TournamentTeamEntity>>
+
+    @Query("SELECT * FROM matches WHERE tournamentId = :tid ORDER BY id ASC")
+    abstract fun observeMatches(tid: Long): Flow<List<MatchEntity>>
+
+    @Insert
+    abstract suspend fun insertTournament(t: TournamentEntity): Long
+
+    @Insert
+    abstract suspend fun insertTeams(list: List<TournamentTeamEntity>)
+
+    @Insert
+    abstract suspend fun insertMatch(m: MatchEntity): Long
+
+    @Query("DELETE FROM matches WHERE id = :id")
+    abstract suspend fun deleteMatch(id: Long)
+
+    @Query("DELETE FROM matches WHERE tournamentId = :tid")
+    abstract suspend fun deleteMatchesOf(tid: Long)
+
+    @Query("DELETE FROM tournament_teams WHERE tournamentId = :tid")
+    abstract suspend fun deleteTeamsOf(tid: Long)
+
+    @Query("DELETE FROM tournaments WHERE id = :tid")
+    abstract suspend fun deleteTournament(tid: Long)
+
+    @Transaction
+    open suspend fun create(t: TournamentEntity, teams: List<TournamentTeamEntity>) {
+        val id = insertTournament(t)
+        insertTeams(teams.map { it.copy(tournamentId = id) })
+    }
+
+    @Transaction
+    open suspend fun deleteAll(tid: Long) {
+        deleteMatchesOf(tid)
+        deleteTeamsOf(tid)
+        deleteTournament(tid)
+    }
+}
+
 @Database(
     entities = [
         TeamEntity::class,
@@ -127,6 +173,7 @@ abstract class TeamDao {
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun teamDao(): TeamDao
+    abstract fun tournamentDao(): TournamentDao
 
     companion object {
         @Volatile
