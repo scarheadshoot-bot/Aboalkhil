@@ -35,6 +35,8 @@ sealed interface Screen {
     object Home : Screen
     object Teams : Screen
     data class TeamEditor(val teamId: Long?) : Screen
+    object CreateTournament : Screen
+    object Tournament : Screen
 }
 
 class MainActivity : ComponentActivity() {
@@ -46,7 +48,12 @@ class MainActivity : ComponentActivity() {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
                     when (val s = screen) {
-                        Screen.Home -> HomeScreen(db, onTeams = { screen = Screen.Teams })
+                        Screen.Home -> HomeScreen(
+                            db,
+                            onTeams = { screen = Screen.Teams },
+                            onCreate = { screen = Screen.CreateTournament },
+                            onContinue = { screen = Screen.Tournament }
+                        )
                         Screen.Teams -> {
                             BackHandler { screen = Screen.Home }
                             TeamsScreen(
@@ -59,6 +66,18 @@ class MainActivity : ComponentActivity() {
                             BackHandler { screen = Screen.Teams }
                             TeamEditorScreen(db, s.teamId, onDone = { screen = Screen.Teams })
                         }
+                        Screen.CreateTournament -> {
+                            BackHandler { screen = Screen.Home }
+                            CreateTournamentScreen(
+                                db,
+                                onBack = { screen = Screen.Home },
+                                onStarted = { screen = Screen.Tournament }
+                            )
+                        }
+                        Screen.Tournament -> {
+                            BackHandler { screen = Screen.Home }
+                            TournamentScreen(db, onHome = { screen = Screen.Home })
+                        }
                     }
                 }
             }
@@ -67,9 +86,15 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun HomeScreen(db: AppDatabase, onTeams: () -> Unit) {
+fun HomeScreen(
+    db: AppDatabase,
+    onTeams: () -> Unit,
+    onCreate: () -> Unit,
+    onContinue: () -> Unit
+) {
     val ctx = LocalContext.current
     val count by db.teamDao().observeCount().collectAsState(initial = 0)
+    val active by db.tournamentDao().observeActive().collectAsState(initial = null)
     val soon = { Toast.makeText(ctx, "قريبًا", Toast.LENGTH_SHORT).show() }
 
     NeonBackground {
@@ -87,7 +112,19 @@ fun HomeScreen(db: AppDatabase, onTeams: () -> Unit) {
                 fontWeight = FontWeight.Bold
             )
             Spacer(Modifier.height(40.dp))
-            NeonButton("إنشاء بطولة", onClick = soon)
+            if (active != null) {
+                NeonButton("متابعة", onClick = onContinue)
+                Spacer(Modifier.height(14.dp))
+            }
+            NeonButton("إنشاء بطولة", onClick = {
+                if (active != null) {
+                    Toast.makeText(ctx, "توجد بطولة قيد التنفيذ، اضغط متابعة", Toast.LENGTH_SHORT).show()
+                } else if (count < 2) {
+                    Toast.makeText(ctx, "أنشئ فريقين على الأقل أولًا", Toast.LENGTH_SHORT).show()
+                } else {
+                    onCreate()
+                }
+            })
             Spacer(Modifier.height(14.dp))
             NeonButton("إنشاء فريق  $count", onClick = onTeams)
             Spacer(Modifier.height(14.dp))
