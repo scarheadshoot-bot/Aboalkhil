@@ -180,7 +180,7 @@ fun CreateTournamentScreen(db: AppDatabase, onBack: () -> Unit, onStarted: () ->
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(teams, key = { it.id }) { team ->
+                    items(teams, key = { "team_${it.id}" }) { team ->
                         val isSel = selected.contains(team.id)
                         Card(
                             modifier = Modifier
@@ -325,14 +325,19 @@ private fun Celebration(champ: TournamentTeamEntity, onBack: () -> Unit, onUndo:
 
 @Composable
 fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
+    val active by db.tournamentDao().observeActive().collectAsState(initial = null)
+    val current = active
+    if (current == null) {
+        NeonBackground { }
+    } else {
+        TournamentContent(db, current, onHome)
+    }
+}
+
+@Composable
+private fun TournamentContent(db: AppDatabase, t: TournamentEntity, onHome: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val active by db.tournamentDao().observeActive().collectAsState(initial = null)
-    val t = active
-    if (t == null) {
-        NeonBackground { }
-        return
-    }
     val teams by remember(t.id) { db.tournamentDao().observeTeams(t.id) }.collectAsState(initial = emptyList())
     val matches by remember(t.id) { db.tournamentDao().observeMatches(t.id) }.collectAsState(initial = emptyList())
 
@@ -426,48 +431,50 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
                     )
                 }
 
-                when (mode) {
-                    "LEAGUE" -> Text(
+                if (mode == "LEAGUE") {
+                    Text(
                         "مرحلة الدوري • $done من $total",
                         color = NeonCyan,
                         fontSize = 14.sp,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                     )
-                    "TIE" -> if (res != null) {
-                        val c = res.tieCandidates.size
-                        val pairs = c * (c - 1) / 2
-                        val played = ties.count { it.round == res.tieRound }
-                        val qNames = teams.filter { res.qualified.contains(it.id) }.joinToString("، ") { it.name }
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0x66F59E0B))
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
+                }
+                if (mode == "TIE" && res != null) {
+                    val c = res.tieCandidates.size
+                    val pairs = c * (c - 1) / 2
+                    val played = ties.count { it.round == res.tieRound }
+                    val qNames = teams.filter { res.qualified.contains(it.id) }.joinToString("، ") { it.name }
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0x66F59E0B))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                "مباراة فاصلة للتأهل إلى النهائي",
+                                color = Color.White,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "$c فرق تتنافس على ${res.tieSlots} مقعد • $played من $pairs",
+                                color = Color(0xEEFFFFFF),
+                                fontSize = 13.sp
+                            )
+                            if (qNames.isNotEmpty()) {
                                 Text(
-                                    "مباراة فاصلة للتأهل إلى النهائي",
-                                    color = Color.White,
-                                    fontSize = 17.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    "$c فرق تتنافس على ${res.tieSlots} مقعد • $played من $pairs",
-                                    color = Color(0xEEFFFFFF),
+                                    "متأهل مؤقتًا: $qNames",
+                                    color = Color(0xFF86EFAC),
                                     fontSize = 13.sp
                                 )
-                                if (qNames.isNotEmpty()) {
-                                    Text(
-                                        "متأهل مؤقتًا: $qNames",
-                                        color = Color(0xFF86EFAC),
-                                        fontSize = 13.sp
-                                    )
-                                }
                             }
                         }
                     }
-                    "FINAL" -> Text(
+                }
+                if (mode == "FINAL") {
+                    Text(
                         "🏆 النهائي",
                         color = Color(0xFFFBBF24),
                         fontSize = 20.sp,
@@ -530,7 +537,7 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    item {
+                    item(key = "header") {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -544,7 +551,7 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
                             StatCell("نقاط", Color(0xCCFFFFFF), false, 12)
                         }
                     }
-                    items(rows, key = { it.team.id }) { row ->
+                    items(rows, key = { "team_${it.team.id}" }) { row ->
                         val id = row.team.id
                         val sel = id == first || id == second
                         val rank = rows.indexOfFirst { it.wins == row.wins } + 1
@@ -555,7 +562,7 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
                             mode == "TIE" && res != null && res.tieCandidates.contains(id) -> "⚔️ فاصلة"
                             else -> ""
                         }
-                        val borderStroke = when {
+                        val borderStroke: BorderStroke? = when {
                             sel -> BorderStroke(3.dp, NeonCyan)
                             status.startsWith("⚔") -> BorderStroke(2.dp, Color(0xFFF59E0B))
                             status.startsWith("🏅") -> BorderStroke(2.dp, Color(0xFFFBBF24))
@@ -611,7 +618,7 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
                     }
 
                     if (matches.isNotEmpty()) {
-                        item {
+                        item(key = "results_title") {
                             Text(
                                 "النتائج",
                                 color = Color.White,
@@ -620,7 +627,7 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
                                 modifier = Modifier.padding(top = 8.dp, start = 4.dp)
                             )
                         }
-                        items(matches.reversed(), key = { it.id }) { m ->
+                        items(matches.reversed(), key = { "match_${it.id}" }) { m ->
                             val w = teams.firstOrNull { it.id == m.winnerId }
                             val loserId = if (m.winnerId == m.team1Id) m.team2Id else m.team1Id
                             val l = teams.firstOrNull { it.id == loserId }
@@ -665,7 +672,7 @@ fun TournamentScreen(db: AppDatabase, onHome: () -> Unit) {
                         }
                     }
 
-                    item {
+                    item(key = "delete") {
                         TextButton(
                             onClick = { confirmDelete = true },
                             modifier = Modifier.fillMaxWidth()
