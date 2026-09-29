@@ -262,7 +262,9 @@ fun CreateTournamentScreen(db: AppDatabase, onBack: () -> Unit, onStarted: () ->
 
 @Composable
 private fun Celebration(
+    tournamentName: String,
     champ: TournamentTeamEntity,
+    rows: List<TeamRow>,
     onBack: () -> Unit,
     onUndo: () -> Unit,
     onFinish: () -> Unit
@@ -322,6 +324,16 @@ private fun Celebration(
             Text(it, color = Color(0xEEFFFFFF), fontSize = 18.sp)
         }
         Spacer(Modifier.height(24.dp))
+        PosterButton(makeBitmap = {
+            buildPosterBitmap(
+                tournamentName = tournamentName,
+                championName = champ.name,
+                championLogoPath = champ.logoPath,
+                championPlayers = names,
+                rows = rows.mapIndexed { i, r -> PosterRow(i + 1, r.team.name, r.team.logoPath, r.wins) }
+            )
+        })
+        Spacer(Modifier.height(12.dp))
         NeonButton("إنهاء البطولة", onClick = onFinish)
         TextButton(onClick = onUndo) {
             Text("إلغاء نتيجة النهائي ×", color = Color(0xFFF87171))
@@ -436,7 +448,9 @@ private fun TournamentContent(
     NeonBackground {
         if (champion != null && finalMatch != null) {
             Celebration(
+                tournamentName = t.name,
                 champ = champion,
+                rows = rows,
                 onBack = onHome,
                 onUndo = { undoMatch = finalMatch },
                 onFinish = { onFinish(champion.id) }
