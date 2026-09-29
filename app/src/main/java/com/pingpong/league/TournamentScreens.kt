@@ -387,6 +387,7 @@ private fun TournamentContent(
     var pendingWinner by remember { mutableStateOf<Long?>(null) }
     var undoMatch by remember { mutableStateOf<MatchEntity?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var introShown by remember(t.id) { mutableStateOf(false) }
 
     val league = matches.filter { it.phase == "LEAGUE" }
     val ties = matches.filter { it.phase == "TIE" }
@@ -445,6 +446,10 @@ private fun TournamentContent(
         else -> false
     }
 
+    val finalistA = finalists?.getOrNull(0)?.let { id -> teams.firstOrNull { it.id == id } }
+    val finalistB = finalists?.getOrNull(1)?.let { id -> teams.firstOrNull { it.id == id } }
+    val showIntro = mode == "FINAL" && finals.isEmpty() && !introShown && finalistA != null && finalistB != null
+
     NeonBackground {
         if (champion != null && finalMatch != null) {
             Celebration(
@@ -454,6 +459,12 @@ private fun TournamentContent(
                 onBack = onHome,
                 onUndo = { undoMatch = finalMatch },
                 onFinish = { onFinish(champion.id) }
+            )
+        } else if (showIntro && finalistA != null && finalistB != null) {
+            FinalShowdownIntro(
+                a = finalistA,
+                b = finalistB,
+                onDismiss = { introShown = true }
             )
         } else {
             Column(
