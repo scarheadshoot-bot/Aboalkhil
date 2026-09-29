@@ -171,6 +171,18 @@ fun ArchiveDetailScreen(db: AppDatabase, tournamentId: Long, onBack: () -> Unit)
                             champion.players.split("\n").filter { it.isNotBlank() }.forEach {
                                 Text(it, color = Color(0xEEFFFFFF), fontSize = 16.sp)
                             }
+                            Spacer(Modifier.height(12.dp))
+                            PosterButton(makeBitmap = {
+                                buildPosterBitmap(
+                                    tournamentName = tour?.name ?: "",
+                                    championName = champion.name,
+                                    championLogoPath = champion.logoPath,
+                                    championPlayers = champion.players.split("\n").filter { it.isNotBlank() },
+                                    rows = rows.mapIndexed { i, r ->
+                                        PosterRow(i + 1, r.team.name, r.team.logoPath, r.wins)
+                                    }
+                                )
+                            })
                         }
                     }
                 }
